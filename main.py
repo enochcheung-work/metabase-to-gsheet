@@ -3,49 +3,61 @@ import pandas as pd
 import gspread
 import gspread_pandas
 from gspread_pandas import Spread, Client
+import json
 
-#get metabse session id
+#get metabase session id
 headers = {'Content-Type': 'application/json'}
-payload = {'username': '{your_metabase_id}', 'password': '{your_metabase_pw}'}
-url = '{your_metabase_uri}'
-r = requests.post(url, json=payload, headers=headers)
-x_id = r.json()['id']
+with open('payload.json') as f:
+    payload = json.load(f)
+url = 'https://YOURURL/api/session'
 
-query_pair = {"{your_metabase_question_1}":'{your_gsheet_sheetname_1}',"{your_metabase_question_2}":'{your_gsheet_sheetname_2}'}
-        
-class MetabaseQuerytoGS:
+def get_x_id():
+    r = requests.post(url, json=payload, headers=headers)
+    x_id = r.json()['id']
+    return x_id
 
+def get_data_from_metabase(query_id, x_id):
+    headers = {'Content-Type': 'application/json', 'X-Metabase-Session': x_id}
+    url = f'https://YOURURL/api/card/{query_id}/query'
+    response = requests.post(url, headers=headers)
+    rows = response.json()['data']['rows']
+    data = pd.DataFrame(rows)
+    columns = response.json()['data']['cols']
+    col=[]
+    for i in columns:
+        col.append(i['display_name'])
+    data.columns = col
+    return data
 
-    def metabase_get(q):
-        headers = {'Content-Type': 'application/json', 'X-Metabase-Session':x_id}
-        url = '{your_metabase_uri}' + q + '/query'
-        response = requests.post(url, headers=headers)
-        rows = response.json()['data']['rows']
-        data = pd.DataFrame(rows)
-        columns = response.json()['data']['cols']
-        col=[]
-        for i in columns:
-            col.append(i['display_name'])
-        data.columns = col
-        return data
+def write_to_gs(data, sheet_name):
+    try:
+        c = gspread_pandas.conf.get_config(conf_dir='./', file_name='google_secret.json')
+        spread = Spread('metabase_query', config=c)
+        spread.df_to_sheet(data, index=False, sheet=sheet_name, start='A1', replace=True)
+        print(f'Successfully wrote data to sheet "{sheet_name}"')
+    except Exception as e:
+        print(f'Error writing data to sheet "{sheet_name}": {e}')
 
-    def df2gs(data, sheet):
-        try:
-            c = gspread_pandas.conf.get_config(conf_dir='./', file_name='google_secret.json')
-            print('config get')
-            spread = Spread('{your_gsheetname}', config=c)
-            print('spreaded')
-            spread.df_to_sheet(data, index=False, sheet=sheet, start='A1', replace=True)
-            print("done")
-        except:
-            "spread not done"
-
-def main(self):
-    for x, y in query_pair.items():
-        data = MetabaseQuerytoGS.metabase_get(x) 
-        MetabaseQuerytoGS.df2gs(data, y)
-    return {}
-        
-
-if __name__ == '__main__':
-    main(None)
+def main(request):
+    with open('query_pair.json') as f:
+        query_pair = json.load(f)
+    try:
+        with open('/tmp/x_id.json') as f:
+            x_id = json.load(f)['id']
+        # check if the x_id is still valid
+        headers = {'Content-Type': 'application/json', 'X-Metabase-Session': x_id}
+        url = 'https://YOURURL/api/user/current'
+        response = requests.get(url, headers=headers)
+        if response.status_code == 403:
+            # if the session is expired, get a new x_id
+            x_id = get_x_id()
+            with open('/tmp/x_id.json', 'w') as f:
+                json.dump({'id': x_id}, f)
+    except FileNotFoundError:
+        x_id = get_x_id()
+        with open('/tmp/x_id.json', 'w') as f:
+            json.dump({'id': x_id}, f)
+    for query_id, sheet_name in query_pair.items():
+        data = get_data_from_metabase(query_id, x_id)
+        write_to_gs(data, sheet_name)
+    return f"Function completed successfully."
